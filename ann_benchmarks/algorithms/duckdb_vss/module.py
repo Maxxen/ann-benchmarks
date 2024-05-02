@@ -11,18 +11,18 @@ class DuckDBVSS(BaseANN):
         self._ef_construction = method_param['efConstruction']
         self._con = None
 
-        if metric == "angular":
-            self._query = "SELECT id FROM items ORDER BY array_cosine_similarity(embedding, %s) LIMIT %s"
-        elif metric == "euclidean":
-            self._query = "SELECT id FROM items ORDER BY array_distance(embedding, %s) LIMIT %s"
-        else:
-            raise RuntimeError(f"unknown metric {metric}")
+
 
     def fit(self, X):
-        #subprocess.run("service postgresql start", shell=True, check=True, stdout=sys.stdout, stderr=sys.stderr)
-        #conn = psycopg.connect(user="ann", password="ann", dbname="ann", autocommit=True)
-        #pgvector.psycopg.register_vector(conn)
-        con = duckdb.connect()
+
+        if self._metric == "angular":
+            self._query = "SELECT id FROM items ORDER BY array_cosine_similarity(embedding, ?::FLOAT[%d]) LIMIT ?" % X.shape[1]
+        elif self._metric == "euclidean":
+            self._query = "SELECT id FROM items ORDER BY array_distance(embedding, ?::FLOAT[%d]) LIMIT ?" % X.shape[1]
+        else:
+            raise RuntimeError(f"unknown metric {self._metric}")
+
+        con = duckdb.connect("temp.db")
         con.execute("INSTALL vss")
         con.execute("LOAD vss")
         con.execute("DROP TABLE IF EXISTS items")
@@ -33,9 +33,9 @@ class DuckDBVSS(BaseANN):
             X = X.astype(numpy.float32)
 
         print("copying data...")
-        for i, embedding in enumerate(X):
-            con.execute("INSERT INTO items VALUES (?, ?)", (i, embedding))
-            
+        columns = ",".join(["column" + str(i) for i in range(X.shape[1])])
+        con.execute(f"INSERT INTO items SELECT row_number() OVER (), array_value({columns}) FROM X")
+      
         print("creating index...")
         if self._metric == "angular":
             con.execute(
@@ -54,14 +54,17 @@ class DuckDBVSS(BaseANN):
         #self._cur.execute("SET hnsw.ef_search = %d" % ef_search)
 
     def query(self, v, n):
+        if v.dtype != numpy.float32:
+            v = v.astype(numpy.float32)
+            
         res = self._con.execute(self._query, (v, n)).fetchall()
         return [id for id, in res]
     
     def get_memory_usage(self):
         if self._con is None:
             return 0
-        mem = self._con.execute("SELECT approx_memory_usage FROM pragma_hnsw_index_info() WHERE name = 'my_idx'").fetchone()
+        mem = self._con.execute("SELECT approx_memory_usage FROM pragma_hnsw_index_info() WHERE index_name = 'my_idx'").fetchone()
         return mem[0] / 1024
 
     def __str__(self):
-        return f"DuckDBVSS(m={self._m}, ef_construction={self._ef_construction}, ef_search={self._ef_search})"
+        return f"DuckDBVSS(m={self._m}, ef_construction={self._ef_construction})"
