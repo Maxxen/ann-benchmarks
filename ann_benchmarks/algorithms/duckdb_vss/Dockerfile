@@ -1,3 +1,3 @@
 FROM ann-benchmarks
 
-RUN pip3 install duckdb numpy
+RUN pip3 install duckdb numpy pyarrow

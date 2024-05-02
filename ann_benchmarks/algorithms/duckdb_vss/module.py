@@ -1,5 +1,9 @@
-import numpy
+import os
+
+
 import duckdb
+import numpy
+import pyarrow as pa
 
 from ..base.module import BaseANN
 
@@ -11,36 +15,40 @@ class DuckDBVSS(BaseANN):
         self._ef_construction = method_param['efConstruction']
         self._con = None
 
-
-
     def fit(self, X):
 
+        width = X.shape[1]
+
         if self._metric == "angular":
-            self._query = "SELECT id FROM items ORDER BY array_cosine_similarity(embedding, ?::FLOAT[%d]) LIMIT ?" % X.shape[1]
+            self._query = "SELECT id FROM items ORDER BY array_cosine_similarity(embedding, ?::FLOAT[%d]) LIMIT ?" % width
         elif self._metric == "euclidean":
-            self._query = "SELECT id FROM items ORDER BY array_distance(embedding, ?::FLOAT[%d]) LIMIT ?" % X.shape[1]
+            self._query = "SELECT id FROM items ORDER BY array_distance(embedding, ?::FLOAT[%d]) LIMIT ?" % width
         else:
             raise RuntimeError(f"unknown metric {self._metric}")
 
+        # Delete the database file if it exists
+        if os.path.exists("temp.db"):
+            os.remove("temp.db")
+
+        # Connect to the database
         con = duckdb.connect("temp.db")
         con.execute("INSTALL vss")
         con.execute("LOAD vss")
         con.execute("DROP TABLE IF EXISTS items")
-        con.execute("CREATE TABLE items (id int, embedding FLOAT[%d])" % X.shape[1])
-
-        # DuckDB only supports float vectors
-        if X.dtype != numpy.float32:
-            X = X.astype(numpy.float32)
+        con.execute("CREATE TABLE items (id int, embedding FLOAT[%d])" % width)
 
         print("copying data...")
-        columns = ",".join(["column" + str(i) for i in range(X.shape[1])])
-        con.execute(f"INSERT INTO items SELECT row_number() OVER (), array_value({columns}) FROM X")
-      
+    
+        # Convert NumPy array to PyArrow fixed-size list array
+        X.shape = -1
+        embedding_array = pa.FixedSizeListArray.from_arrays(X, width)
+        embedding_table = pa.Table.from_arrays([embedding_array], ['embedding'])
+        
+        con.execute(f"INSERT INTO items SELECT row_number() OVER (), embedding FROM embedding_table")
+
         print("creating index...")
         if self._metric == "angular":
-            con.execute(
-                "CREATE INDEX my_idx ON items USING HNSW (embedding) WITH (metric='cosine', m = %d, ef_construction = %d)" % (self._m, self._ef_construction)
-            )
+            con.execute("CREATE INDEX my_idx ON items USING HNSW (embedding) WITH (metric='cosine', m = %d, ef_construction = %d)" % (self._m, self._ef_construction))
         elif self._metric == "euclidean":
             con.execute("CREATE INDEX my_idx ON items USING HNSW (embedding) WITH (metric='l2sq', m = %d, ef_construction = %d)" % (self._m, self._ef_construction))
         else:
@@ -54,9 +62,6 @@ class DuckDBVSS(BaseANN):
         #self._cur.execute("SET hnsw.ef_search = %d" % ef_search)
 
     def query(self, v, n):
-        if v.dtype != numpy.float32:
-            v = v.astype(numpy.float32)
-            
         res = self._con.execute(self._query, (v, n)).fetchall()
         return [id for id, in res]
     
