@@ -38,13 +38,13 @@ class DuckDBVSS(BaseANN):
         con.execute("CREATE TABLE items (id int, embedding FLOAT[%d])" % width)
 
         print("copying data...")
-    
-        # Convert NumPy array to PyArrow fixed-size list array
-        X.shape = -1
-        embedding_array = pa.FixedSizeListArray.from_arrays(X, width)
-        embedding_table = pa.Table.from_arrays([embedding_array], ['embedding'])
+        row_id_array = pa.array(range(X.shape[0]))
+        arr = numpy.copy(X)
+        arr.shape = -1
+        embedding_array = pa.FixedSizeListArray.from_arrays(arr, width)
+        embedding_table = pa.Table.from_arrays([row_id_array, embedding_array], ['id', 'embedding'])
         
-        con.execute(f"INSERT INTO items SELECT row_number() OVER (), embedding FROM embedding_table")
+        con.execute(f"INSERT INTO items SELECT id, embedding FROM embedding_table ORDER BY id")
 
         print("creating index...")
         if self._metric == "angular":
