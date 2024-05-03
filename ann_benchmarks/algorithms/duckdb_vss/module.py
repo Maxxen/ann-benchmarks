@@ -31,12 +31,16 @@ class DuckDBVSS(BaseANN):
             os.remove("temp.db")
 
         # Connect to the database
-        con = duckdb.connect("temp.db")
-        con.execute("INSTALL vss")
+        con = duckdb.connect("temp.db", config = {"allow_unsigned_extensions": "true"})
+
+        # Load the latest version of the VSS extension
+        con.execute("FORCE INSTALL vss FROM 'http://nightly-extensions.duckdb.org'")
         con.execute("LOAD vss")
+        con.execute("SET hnsw_enable_experimental_persistence = true")
         con.execute("DROP TABLE IF EXISTS items")
         con.execute("CREATE TABLE items (id int, embedding FLOAT[%d])" % width)
 
+        # Create a pyarrow table from the numpy array for efficient data transfer
         print("copying data...")
         row_id_array = pa.array(range(X.shape[0]))
         arr = numpy.copy(X)
@@ -46,6 +50,7 @@ class DuckDBVSS(BaseANN):
         
         con.execute(f"INSERT INTO items SELECT id, embedding FROM embedding_table ORDER BY id")
 
+        # Create the index
         print("creating index...")
         if self._metric == "angular":
             con.execute("CREATE INDEX my_idx ON items USING HNSW (embedding) WITH (metric='cosine', m = %d, ef_construction = %d)" % (self._m, self._ef_construction))
@@ -57,9 +62,8 @@ class DuckDBVSS(BaseANN):
         self._con = con
 
     def set_query_arguments(self, ef_search):
-        pass
-        #self._ef_search = ef_search
-        #self._cur.execute("SET hnsw.ef_search = %d" % ef_search)
+        self._ef_search = ef_search
+        self._con.execute("SET hnsw_ef_search = %d" % ef_search)
 
     def query(self, v, n):
         res = self._con.execute(self._query, (v, n)).fetchall()
@@ -72,4 +76,4 @@ class DuckDBVSS(BaseANN):
         return mem[0] / 1024
 
     def __str__(self):
-        return f"DuckDBVSS(m={self._m}, ef_construction={self._ef_construction})"
+        return f"DuckDBVSS(m={self._m}, ef_construction={self._ef_construction}, ef_search={self._ef_search})"
