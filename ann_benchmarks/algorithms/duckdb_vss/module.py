@@ -20,7 +20,7 @@ class DuckDBVSS(BaseANN):
         width = X.shape[1]
 
         if self._metric == "angular":
-            self._query = "SELECT id FROM items ORDER BY array_cosine_similarity(embedding, ?::FLOAT[%d]) LIMIT ?" % width
+            self._query = "SELECT id FROM items ORDER BY array_cosine_distance(embedding, ?::FLOAT[%d]) LIMIT ?" % width
         elif self._metric == "euclidean":
             self._query = "SELECT id FROM items ORDER BY array_distance(embedding, ?::FLOAT[%d]) LIMIT ?" % width
         else:
@@ -34,7 +34,7 @@ class DuckDBVSS(BaseANN):
         con = duckdb.connect("temp.db", config = {"allow_unsigned_extensions": "true"})
 
         # Load the latest version of the VSS extension
-        con.execute("FORCE INSTALL vss FROM 'http://nightly-extensions.duckdb.org'")
+        con.execute("FORCE INSTALL '/home/app/duckdb_vss/build/release/extension/vss/vss.duckdb_extension'")
         con.execute("LOAD vss")
         con.execute("SET hnsw_enable_experimental_persistence = true")
         con.execute("DROP TABLE IF EXISTS items")
@@ -75,5 +75,29 @@ class DuckDBVSS(BaseANN):
         mem = self._con.execute("SELECT approx_memory_usage FROM pragma_hnsw_index_info() WHERE index_name = 'my_idx'").fetchone()
         return mem[0] / 1024
 
+    # Batch query
+    def batch_query(self, X, n):
+        width = X.shape[1]
+        row_id_array = pa.array(range(X.shape[0]))
+        arr = numpy.copy(X)
+        arr.shape = -1
+        embedding_array = pa.FixedSizeListArray.from_arrays(arr, width)
+        
+        queries = pa.Table.from_arrays([row_id_array, embedding_array], ['id', 'embedding'])
+
+        self.res = self._con.execute(f"""
+            SELECT list(inner_id) as nbr 
+            FROM queries, LATERAL (
+                SELECT items.id as inner_id, array_distance(queries.embedding, items.embedding) as dist
+                FROM items ORDER BY dist LIMIT {n}
+            )
+            GROUP BY id
+            ORDER BY id
+        """).fetchnumpy()
+
+    def get_batch_results(self):
+        return self.res['nbr']
+
+    # To String
     def __str__(self):
         return f"DuckDBVSS(m={self._m}, ef_construction={self._ef_construction}, ef_search={self._ef_search})"
